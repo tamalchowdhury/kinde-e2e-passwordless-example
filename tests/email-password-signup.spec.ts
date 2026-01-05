@@ -1,0 +1,70 @@
+import { test, expect } from '@playwright/test'
+import MailosaurClient from 'mailosaur'
+require('dotenv').config()
+
+// IMPORTANT! to run this test, use the email + password authentication flow in your Kinde app
+
+const mailosaur = new MailosaurClient(process.env.MAILOSAUR_API_KEY!)
+const serverId = process.env.MAILOSAUR_SERVER_ID!
+
+test.describe('Authentication Flows', () => {
+  test('user can sign up with email and password', async ({ page }) => {
+    // Generate unique email for this test run
+    const timestamp = Date.now()
+    const testEmail = `test-${timestamp}@${serverId}.mailosaur.net`
+
+    await page.goto(process.env.TEST_APP_URL!)
+    await page.click('[data-testid="sign-up-button"]')
+
+    // Wait for Kinde sign-up page
+    await expect(page).toHaveURL(/kinde\.com/)
+
+    // Fill sign-up form
+    await page.fill('input[name="p_first_name"]', 'John')
+    await page.fill('input[name="p_last_name"]', 'Doe')
+    await page.fill('input[name="p_email"]', testEmail)
+    await page.check('input[name="p_has_clickwrap_accepted"]') // Accept terms and conditions
+    await page.click('button[type="submit"]')
+
+    // Wait for OTP email
+    const email = await mailosaur.messages.get(serverId, {
+      sentTo: testEmail,
+    })
+
+    // Extract 6-digit OTP code from email
+    const otpMatch = email.text?.body?.match(/\b(\d{6})\b/)
+    const otpCode = otpMatch?.[1]
+
+    if (!otpCode) {
+      throw new Error('Could not extract OTP code from email')
+    }
+
+    // Enter OTP
+    await page.fill('input[name="p_confirmation_code"]', otpCode)
+    await page.click('button[type="submit"]')
+
+    // Enter password
+    await page.fill(
+      'input[name="p_first_password"]',
+      process.env.TEST_USER_PASSWORD!
+    )
+    await page.fill(
+      'input[name="p_second_password"]',
+      process.env.TEST_USER_PASSWORD!
+    )
+    await page.click('button[type="submit"]')
+
+    // Wait for successful auth
+    const appUrl = new URL(process.env.TEST_APP_URL!)
+    await expect(page).toHaveURL(
+      new RegExp(appUrl.hostname.replace('.', '\\.'))
+    )
+    await expect(page.locator('[data-testid="user-profile"]')).toBeVisible()
+
+    // Save state
+    await page.context().storageState({ path: 'playwright/.auth/user.json' })
+
+    // Clean up - delete the email
+    await mailosaur.messages.del(email.id!)
+  })
+})
